@@ -1,0 +1,45 @@
+# Build & Compilation Artifacts
+**/.git_cargo_init/
+**/target/
+target/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+*.obj
+*.lib
+*.a
+
+# Local Runtime Configurations & Secrets
+*antigravity_bridge.json
+*widget_config.json
+*.backup.json
+*.pbtxt
+*.pb
+*.db
+
+# Logs & Diagnostics
+*.log
+*.pcap
+debug_log.txt
+panic.txt
+Rust/*.txt
+Rust/*.log
+
+# Python Cache & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# OS & Editor Artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.user
