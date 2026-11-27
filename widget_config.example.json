@@ -11,6 +11,7 @@
   "show_bluetooth": true,
   "show_clients": true,
   "show_model_quota": true,
+  "show_hotspot_controls": true,
   "show_cpu": true,
   "show_ram": true,
   "show_gpu": true,

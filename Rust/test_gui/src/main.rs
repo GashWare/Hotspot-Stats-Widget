@@ -60,6 +60,45 @@ fn format_uptime(secs: u64) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TaskbarSmoothState {
+    cpu: f32,
+    ram: f32,
+    gpu: f32,
+    vram: f32,
+    dl: f32,
+    ul: f32,
+    fuel: f32,
+    pk_cpu: f32,
+    pk_ram: f32,
+    pk_gpu: f32,
+    pk_vram: f32,
+    pk_dl: f32,
+    pk_ul: f32,
+    last_frame: Instant,
+}
+
+impl Default for TaskbarSmoothState {
+    fn default() -> Self {
+        Self {
+            cpu: 0.0,
+            ram: 0.0,
+            gpu: 0.0,
+            vram: 0.0,
+            dl: 0.0,
+            ul: 0.0,
+            fuel: 100.0,
+            pk_cpu: 0.0,
+            pk_ram: 0.0,
+            pk_gpu: 0.0,
+            pk_vram: 0.0,
+            pk_dl: 0.0,
+            pk_ul: 0.0,
+            last_frame: Instant::now(),
+        }
+    }
+}
+
 struct NetMonitorApp {
     config: WidgetConfig,
     stats: StatsCollector,
@@ -103,6 +142,7 @@ struct NetMonitorApp {
     mem_cleaner: memclean::MemoryCleaner,
     last_auto_clean_interval: Instant,
     last_auto_clean_threshold: Instant,
+    tb_smooth: TaskbarSmoothState,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -306,6 +346,7 @@ impl NetMonitorApp {
             mem_cleaner: memclean::MemoryCleaner::new(),
             last_auto_clean_interval: Instant::now(),
             last_auto_clean_threshold: Instant::now() - Duration::from_secs(300),
+            tb_smooth: TaskbarSmoothState::default(),
         };
         app.sync_graph_settings();
         if app.config.screen_dim_percent > 0 {
@@ -550,6 +591,222 @@ impl NetMonitorApp {
         let theme = self.config.get_theme_palette();
         let delay_ms = self.config.menu_show_delay_ms as u64;
         ui.style_mut().visuals.override_text_color = Some(theme.text_bright);
+
+        // Per-widget focused context menu when right-clicking a specific module/gauge
+        if let Some(mod_name) = target_module {
+            let (header_title, label_upper) = match mod_name {
+                "quota" => ("AI FUEL TANK", "AI FUEL"),
+                "network" => ("NETWORK THROUGHPUT", "NETWORK"),
+                "bluetooth" => ("BLUETOOTH HUB", "BLUETOOTH"),
+                "cpu" => ("CPU TELEMETRY", "CPU"),
+                "ram" => ("RAM MEMORY", "RAM"),
+                "gpu" => ("GPU TELEMETRY", "GPU"),
+                "vram" => ("VRAM MEMORY", "VRAM"),
+                "swap" => ("SWAP MEMORY", "SWAP"),
+                "disk" => ("DISK & UPTIME", "DISK"),
+                _ => ("MODULE", "MODULE"),
+            };
+            ui.label(RichText::new(header_title).color(theme.primary).strong().size(11.0));
+            ui.separator();
+
+            // 1. Widget-specific primary options
+            if mod_name == "quota" {
+                Self::delayed_menu_button(ui, "◈ AI Fuel Gauge Style", delay_ms, |ui| {
+                    let style_ref = &mut self.config.quota_graph_style;
+                    let mut changed = false;
+                    changed |= ui.selectable_value(style_ref, "dash".to_string(), "✦ Theme-Matched Dash (Auto)").clicked();
+                    changed |= ui.selectable_value(style_ref, "twin_dial".to_string(), "◐ Twin Analog Fuel Dials").clicked();
+                    changed |= ui.selectable_value(style_ref, "digital_bar".to_string(), "▤ Digital Segmented LCD Bars").clicked();
+                    changed |= ui.selectable_value(style_ref, "vertical_tubes".to_string(), "▮ Twin Vertical Fuel Cells").clicked();
+                    changed |= ui.selectable_value(style_ref, "arc_rings".to_string(), "◯ Minimalist Ring Gauges").clicked();
+                    changed |= ui.selectable_value(style_ref, "hud_telemetry".to_string(), "◈ Cockpit HUD Telemetry").clicked();
+                    if changed {
+                        self.config.save();
+                        ui.close();
+                    }
+                });
+                if ui.button("↻ Refresh Quota Now").clicked() {
+                    self.quota.refresh();
+                    ui.close();
+                }
+                let q_info = self.quota.get_data();
+                ui.label(RichText::new(format!("Status: {}", q_info.status_text)).size(9.5).color(theme.text_dim));
+            } else if mod_name == "bluetooth" {
+                if ui.button("⚙ Bluetooth Settings & Adapter...").clicked() {
+                    self.show_bluetooth_settings_modal = true;
+                    ui.close();
+                }
+            } else if mod_name == "cpu" || mod_name == "ram" || mod_name == "gpu" || mod_name == "vram" || mod_name == "swap" || mod_name == "disk" || mod_name == "network" {
+                Self::delayed_menu_button(ui, format!("◈ {} Graph Style", label_upper), delay_ms, |ui| {
+                    let style_ref = match mod_name {
+                        "network" => &mut self.config.net_graph_style,
+                        "cpu" => &mut self.config.cpu_graph_style,
+                        "ram" => &mut self.config.ram_graph_style,
+                        "gpu" => &mut self.config.gpu_graph_style,
+                        "vram" => &mut self.config.vram_graph_style,
+                        "swap" => &mut self.config.swap_graph_style,
+                        _ => &mut self.config.disk_graph_style,
+                    };
+                    let c1 = ui
+                        .selectable_value(style_ref, "dash".to_string(), "✦ Retro Automotive Digital Dash")
+                        .clicked();
+                    let c2 = ui
+                        .selectable_value(style_ref, "line".to_string(), "╱ Smooth Line Graph")
+                        .clicked();
+                    let c3 = ui
+                        .selectable_value(style_ref, "block".to_string(), "▤ Segmented Block Bar")
+                        .clicked();
+                    if c1 || c2 || c3 {
+                        self.sync_graph_settings();
+                        self.config.save();
+                        ui.close();
+                    }
+                });
+            }
+
+            if mod_name == "network" {
+                if ui.button("↻ Reset Peak & Total Counters").clicked() {
+                    self.stats.reset_stats();
+                    ui.close();
+                }
+                if ui.checkbox(&mut self.config.hotspot_traffic_only, "Hotspot Traffic Only").changed() {
+                    self.stats.set_hotspot_only(self.config.hotspot_traffic_only);
+                    self.config.save();
+                }
+                if ui.checkbox(&mut self.config.show_clients, "Show Connected Hotspot Devices").changed() {
+                    self.config.save();
+                }
+                if ui.button("◈ Open Traffic Inspector & Blocker").clicked() {
+                    self.inspector_ui.is_open = true;
+                    ui.close();
+                }
+            }
+
+            if mod_name == "ram" {
+                if ui.button(RichText::new("✦ Clean Working Set RAM Now").color(theme.primary).strong()).clicked() {
+                    self.mem_cleaner.start();
+                    ui.close();
+                }
+
+                Self::delayed_menu_button(ui, "⚙ Automated Memory Cleaning", delay_ms, |ui| {
+                    ui.label(RichText::new("Automatic RAM Optimization:").strong().color(theme.primary).size(10.5));
+                    ui.separator();
+
+                    let int_label = format!("Clean every {} minutes", self.config.auto_clean_ram_interval_mins);
+                    if ui.checkbox(&mut self.config.auto_clean_ram_interval_enabled, int_label).changed() {
+                        self.last_auto_clean_interval = Instant::now();
+                        self.config.save();
+                    }
+                    if self.config.auto_clean_ram_interval_enabled {
+                        ui.horizontal(|ui| {
+                            ui.label("Interval:");
+                            for &m in &[5u32, 10, 15, 30, 60] {
+                                if ui.selectable_label(self.config.auto_clean_ram_interval_mins == m, format!("{}m", m)).clicked() {
+                                    self.config.auto_clean_ram_interval_mins = m;
+                                    self.last_auto_clean_interval = Instant::now();
+                                    self.config.save();
+                                }
+                            }
+                        });
+                        ui.add(egui::Slider::new(&mut self.config.auto_clean_ram_interval_mins, 1..=120).text("mins"));
+                    }
+
+                    ui.separator();
+
+                    let thresh_label = format!("Clean when RAM reaches {}%", self.config.auto_clean_ram_threshold_pct);
+                    if ui.checkbox(&mut self.config.auto_clean_ram_threshold_enabled, thresh_label).changed() {
+                        self.config.save();
+                    }
+                    if self.config.auto_clean_ram_threshold_enabled {
+                        ui.horizontal(|ui| {
+                            ui.label("Threshold:");
+                            for &pct in &[65u8, 75, 80, 85, 90, 95] {
+                                if ui.selectable_label(self.config.auto_clean_ram_threshold_pct == pct, format!("{}%", pct)).clicked() {
+                                    self.config.auto_clean_ram_threshold_pct = pct;
+                                    self.config.save();
+                                }
+                            }
+                        });
+                        ui.add(egui::Slider::new(&mut self.config.auto_clean_ram_threshold_pct, 40..=98).text("%"));
+                    }
+                });
+            }
+
+            ui.separator();
+
+            // 2. Module sizing & layout controls (specific to this widget)
+            let cur_h = self.config.get_module_height(mod_name);
+            Self::delayed_menu_button(ui, format!("↕ Module Height ({:.0}px)", cur_h), delay_ms, |ui| {
+                let mut h = cur_h;
+                if ui.add(egui::Slider::new(&mut h, 32.0..=260.0).text("px")).changed() {
+                    self.config.set_module_height(mod_name, h);
+                    self.config.save();
+                }
+                ui.separator();
+                for &(preset_label, val) in &[
+                    ("Compact (40 px)", 40.0f32),
+                    ("Normal (60 px)", 60.0),
+                    ("Tall (90 px)", 90.0),
+                    ("Expanded (130 px)", 130.0),
+                    ("Giant Dash (190 px)", 190.0),
+                ] {
+                    if ui.selectable_label((h - val).abs() < 5.0, preset_label).clicked() {
+                        self.config.set_module_height(mod_name, val);
+                        self.config.save();
+                        ui.close();
+                    }
+                }
+            });
+
+            let is_unlocked = self.unlocked_module.as_deref() == Some(mod_name);
+            let unlock_label = if is_unlocked {
+                format!("Lock {} Position", label_upper)
+            } else {
+                format!("Unlock {} to Drag/Move", label_upper)
+            };
+            if ui.button(unlock_label).clicked() {
+                if is_unlocked {
+                    self.unlocked_module = None;
+                } else {
+                    self.unlocked_module = Some(mod_name.to_string());
+                }
+                ui.close();
+            }
+
+            ui.horizontal(|ui| {
+                if ui.button("▲ Move Up").clicked() {
+                    self.move_module(mod_name, -1);
+                    ui.close();
+                }
+                if ui.button("▼ Move Down").clicked() {
+                    self.move_module(mod_name, 1);
+                    ui.close();
+                }
+            });
+
+            ui.separator();
+
+            if ui.button(RichText::new(format!("✕ Hide {}", label_upper)).color(theme.warning)).clicked() {
+                match mod_name {
+                    "network" => self.config.show_network = false,
+                    "bluetooth" => self.config.show_bluetooth = false,
+                    "quota" => self.config.show_model_quota = false,
+                    "cpu" => self.config.show_cpu = false,
+                    "ram" => self.config.show_ram = false,
+                    "gpu" => self.config.show_gpu = false,
+                    "vram" => self.config.show_vram = false,
+                    "swap" => self.config.show_swap = false,
+                    "disk" => self.config.show_disk = false,
+                    _ => {}
+                }
+                self.config.save();
+                ui.close();
+            }
+
+            return;
+        }
+
+        // Global NetMonitor Menu (when right-clicking header bar or empty widget background)
         ui.label(RichText::new("⚡ NETMONITOR TELEMETRY").color(theme.primary).strong().size(11.0));
         ui.separator();
 
@@ -591,165 +848,6 @@ impl NetMonitorApp {
 
         ui.separator();
 
-        // Module-specific options if right-clicked on a specific module
-        if let Some(mod_name) = target_module {
-            let label_upper = mod_name.to_uppercase();
-            ui.label(RichText::new(format!("MODULE: {}", label_upper)).color(theme.secondary).strong().size(10.0));
-
-            let is_unlocked = self.unlocked_module.as_deref() == Some(mod_name);
-            let unlock_label = if is_unlocked {
-                format!("🔒 Lock {} Position", label_upper)
-            } else {
-                format!("🔓 Unlock {} to Drag/Move", label_upper)
-            };
-            if ui.button(unlock_label).clicked() {
-                if is_unlocked {
-                    self.unlocked_module = None;
-                } else {
-                    self.unlocked_module = Some(mod_name.to_string());
-                }
-                ui.close();
-            }
-
-            ui.horizontal(|ui| {
-                if ui.button("▲ Move Up").clicked() {
-                    self.move_module(mod_name, -1);
-                    ui.close();
-                }
-                if ui.button("▼ Move Down").clicked() {
-                    self.move_module(mod_name, 1);
-                    ui.close();
-                }
-            });
-
-            // Individual Module Height Resizing
-            let cur_h = self.config.get_module_height(mod_name);
-            Self::delayed_menu_button(ui, format!("📏 Module Height ({:.0}px)", cur_h), delay_ms, |ui| {
-                let mut h = cur_h;
-                if ui.add(egui::Slider::new(&mut h, 32.0..=260.0).text("px")).changed() {
-                    self.config.set_module_height(mod_name, h);
-                    self.config.save();
-                }
-                ui.separator();
-                for &(preset_label, val) in &[
-                    ("Compact (40 px)", 40.0f32),
-                    ("Normal (60 px)", 60.0),
-                    ("Tall (90 px)", 90.0),
-                    ("Expanded (130 px)", 130.0),
-                    ("Giant Dash (190 px)", 190.0),
-                ] {
-                    if ui.selectable_label((h - val).abs() < 5.0, preset_label).clicked() {
-                        self.config.set_module_height(mod_name, val);
-                        self.config.save();
-                        ui.close();
-                    }
-                }
-            });
-
-            if mod_name == "cpu" || mod_name == "ram" || mod_name == "gpu" || mod_name == "vram" || mod_name == "swap" || mod_name == "disk" || mod_name == "network" || mod_name == "quota" {
-                Self::delayed_menu_button(ui, format!("{} Graph Style", label_upper), delay_ms, |ui| {
-                    let style_ref = match mod_name {
-                        "network" => &mut self.config.net_graph_style,
-                        "quota" => &mut self.config.quota_graph_style,
-                        "cpu" => &mut self.config.cpu_graph_style,
-                        "ram" => &mut self.config.ram_graph_style,
-                        "gpu" => &mut self.config.gpu_graph_style,
-                        "vram" => &mut self.config.vram_graph_style,
-                        "swap" => &mut self.config.swap_graph_style,
-                        _ => &mut self.config.disk_graph_style,
-                    };
-                    let c1 = ui
-                        .selectable_value(style_ref, "dash".to_string(), "🏎 Retro Automotive Digital Dash")
-                        .clicked();
-                    let c2 = ui
-                        .selectable_value(style_ref, "line".to_string(), "📈 Smooth Line Graph")
-                        .clicked();
-                    let c3 = ui
-                        .selectable_value(style_ref, "block".to_string(), "📊 Segmented Block Bar")
-                        .clicked();
-                    if c1 || c2 || c3 {
-                        self.sync_graph_settings();
-                        self.config.save();
-                        ui.close();
-                    }
-                });
-            }
-
-            if mod_name == "quota" {
-                let q_info = self.quota.get_data();
-                ui.label(RichText::new(format!("Language Server: {}", q_info.status_text)).size(10.0).color(theme.secondary));
-                if ui.button("🔄 Refresh Quota Now").clicked() {
-                    self.quota.refresh();
-                    ui.close();
-                }
-            }
-
-            if mod_name == "network" {
-                if ui.button("🔄 Reset Peak & Total Counters").clicked() {
-                    self.stats.reset_stats();
-                    ui.close();
-                }
-                if ui.checkbox(&mut self.config.hotspot_traffic_only, "Hotspot Traffic Only").changed() {
-                    self.stats.set_hotspot_only(self.config.hotspot_traffic_only);
-                    self.config.save();
-                }
-            }
-
-            if mod_name == "ram" {
-                if ui.button(RichText::new("🧹 Clean Working Set RAM Now").color(theme.primary).strong()).clicked() {
-                    self.mem_cleaner.start();
-                    ui.close();
-                }
-
-                Self::delayed_menu_button(ui, "⚙ Automated Memory Cleaning", delay_ms, |ui| {
-                    ui.label(RichText::new("Automatic RAM Optimization:").strong().color(theme.primary).size(10.5));
-                    ui.separator();
-
-                    // Option 1: Clean every X minutes
-                    let int_label = format!("Clean every {} minutes", self.config.auto_clean_ram_interval_mins);
-                    if ui.checkbox(&mut self.config.auto_clean_ram_interval_enabled, int_label).changed() {
-                        self.last_auto_clean_interval = Instant::now();
-                        self.config.save();
-                    }
-                    if self.config.auto_clean_ram_interval_enabled {
-                        ui.horizontal(|ui| {
-                            ui.label("Interval:");
-                            for &m in &[5u32, 10, 15, 30, 60] {
-                                if ui.selectable_label(self.config.auto_clean_ram_interval_mins == m, format!("{}m", m)).clicked() {
-                                    self.config.auto_clean_ram_interval_mins = m;
-                                    self.last_auto_clean_interval = Instant::now();
-                                    self.config.save();
-                                }
-                            }
-                        });
-                        ui.add(egui::Slider::new(&mut self.config.auto_clean_ram_interval_mins, 1..=120).text("mins"));
-                    }
-
-                    ui.separator();
-
-                    // Option 2: Clean when RAM hits >= Y%
-                    let thresh_label = format!("Clean when RAM reaches {}%", self.config.auto_clean_ram_threshold_pct);
-                    if ui.checkbox(&mut self.config.auto_clean_ram_threshold_enabled, thresh_label).changed() {
-                        self.config.save();
-                    }
-                    if self.config.auto_clean_ram_threshold_enabled {
-                        ui.horizontal(|ui| {
-                            ui.label("Threshold:");
-                            for &pct in &[65u8, 75, 80, 85, 90, 95] {
-                                if ui.selectable_label(self.config.auto_clean_ram_threshold_pct == pct, format!("{}%", pct)).clicked() {
-                                    self.config.auto_clean_ram_threshold_pct = pct;
-                                    self.config.save();
-                                }
-                            }
-                        });
-                        ui.add(egui::Slider::new(&mut self.config.auto_clean_ram_threshold_pct, 40..=98).text("%"));
-                    }
-                });
-            }
-
-            ui.separator();
-        }
-
         // Visible Modules Submenu
         Self::delayed_menu_button(ui, "📊 Visible Graphs & Modules", delay_ms, |ui| {
             if ui.checkbox(&mut self.config.show_network, "Network Throughput Graph").changed() {
@@ -780,6 +878,10 @@ impl NetMonitorApp {
                 self.config.save();
             }
             if ui.checkbox(&mut self.config.show_disk, "Disk & System Uptime").changed() {
+                self.config.save();
+            }
+            ui.separator();
+            if ui.checkbox(&mut self.config.show_hotspot_controls, "Hotspot Toggle & Controls Footer").changed() {
                 self.config.save();
             }
         });
@@ -1034,6 +1136,10 @@ impl NetMonitorApp {
 }
 
 impl eframe::App for NetMonitorApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::TRANSPARENT.to_array()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let theme = self.config.get_theme_palette();
@@ -1140,13 +1246,15 @@ impl eframe::App for NetMonitorApp {
 
         // Continuous fluid repaint vs interval-based repaint
         if self.config.fluid_graphs {
-            ctx.request_repaint_after(Duration::from_millis(85));
+            // Smooth ~45-60fps animation for fluid graphs & damped taskbar needles
+            let ms = if self.config.show_taskbar_gauges { 22 } else { 33 };
+            ctx.request_repaint_after(Duration::from_millis(ms));
         } else {
             ctx.request_repaint_after(Duration::from_millis(self.config.graph_interval_ms.max(250)));
         }
         // Skinned themes with animation (Matrix rain, Synthwave grid, ...) need a smoother tick
         if skins::is_animated(&theme.id) && !self.config.mini_mode {
-            ctx.request_repaint_after(Duration::from_millis(66));
+            ctx.request_repaint_after(Duration::from_millis(33));
         }
 
         // Poll System Tray Interactions
@@ -1273,8 +1381,10 @@ impl eframe::App for NetMonitorApp {
                     self.module_rects.push((module, mod_rect));
                 }
 
-                // Controls Footer
-                self.render_controls_footer(ui, &theme);
+                // Controls Footer (can be toggled on/off from Visible Modules menu)
+                if self.config.show_hotspot_controls {
+                    self.render_controls_footer(ui, &theme);
+                }
             });
 
         // Attach right-click context menu to any empty background area of the widget
@@ -2316,20 +2426,23 @@ impl NetMonitorApp {
         let anim_t = ui.input(|i| i.time) as f32;
         let (rect, resp) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), graph_h),
-            egui::Sense::hover(),
+            egui::Sense::click(),
         );
 
+        let painter = ui.painter_at(rect);
+        crate::skins::draw_fuel_gauge(&painter, rect, &quota_data, theme, anim_t, &self.config.quota_graph_style);
+
         let tip = format!(
-            "⛽ Antigravity AI Model Quota\nGemini 5-Hour Sprint Limit: {:.1}% (Resets in {})\nGemini Weekly Reserve Limit: {:.1}% (Resets in {})\nClaude & GPT 5-Hour Limit: {:.1}%\nClaude & GPT Weekly Limit: {:.1}%\nLanguage Server: {}",
+            "Antigravity AI Model Quota (Right-click to change style)\nGemini 5-Hour Sprint Limit: {:.1}% (Resets in {})\nGemini Weekly Reserve Limit: {:.1}% (Resets in {})\nClaude & GPT 5-Hour Limit: {:.1}%\nClaude & GPT Weekly Limit: {:.1}%\nLanguage Server: {}",
             quota_data.gemini_5h_pct, quota_data.gemini_5h_reset,
             quota_data.gemini_weekly_pct, quota_data.gemini_weekly_reset,
             quota_data.claude_5h_pct, quota_data.claude_weekly_pct,
             quota_data.status_text
         );
-        resp.on_hover_text(tip);
-
-        let painter = ui.painter_at(rect);
-        crate::skins::draw_fuel_gauge(&painter, rect, &quota_data, theme, anim_t, &self.config.quota_graph_style);
+        resp.clone().on_hover_text(tip);
+        resp.context_menu(|ui| {
+            self.render_global_context_menu(ui, Some("quota"));
+        });
     }
 
     fn render_cpu_contents(
@@ -3113,6 +3226,12 @@ impl NetMonitorApp {
                     if ui.checkbox(&mut self.config.show_disk, "Primary Disk & System Uptime").changed() {
                         self.config.save();
                     }
+                    if ui.checkbox(&mut self.config.show_model_quota, "AI Model Quota (Antigravity Fuel)").changed() {
+                        self.config.save();
+                    }
+                    if ui.checkbox(&mut self.config.show_hotspot_controls, "Hotspot Toggle & Controls Footer").changed() {
+                        self.config.save();
+                    }
 
                     ui.separator();
                     ui.label(RichText::new("Module Display Order (or Right-Click -> Unlock to Drag):").strong());
@@ -3498,8 +3617,8 @@ impl NetMonitorApp {
 
         let y_pos = wa_b + (tb_height - gauge_h) * 0.5;
 
-        // Ensure HWND remains TOPMOST above Shell_TrayWnd
-        window_fx::pin_taskbar_window_topmost("NetMonitor Micro-Gauges");
+        // Ensure HWND remains TOPMOST above Shell_TrayWnd and physically clipped to the exact stadium pill
+        window_fx::pin_taskbar_window_topmost_pill("NetMonitor Micro-Gauges");
 
         let vp_id = egui::ViewportId::from_hash_of("netmonitor_taskbar_micro_gauges");
         let vp_builder = egui::ViewportBuilder::default()
@@ -3520,17 +3639,94 @@ impl NetMonitorApp {
         let mut trigger_ram_clean = false;
         let ram_status = self.mem_cleaner.status();
 
+        // Compute targets & smoothly damp all taskbar gauges for buttery 60fps needle motion
+        let q_data = self.quota.get_data();
+        let target_dl = ((sys_data.net_dl_bps / 5_000_000.0) * 100.0).clamp(0.0, 100.0) as f32;
+        let target_ul = ((sys_data.net_ul_bps / 2_000_000.0) * 100.0).clamp(0.0, 100.0) as f32;
+        let dt = self.tb_smooth.last_frame.elapsed().as_secs_f32().clamp(0.001, 0.1);
+        self.tb_smooth.last_frame = Instant::now();
+        let alpha = if self.config.fluid_graphs {
+            1.0 - (-8.0 * dt).exp()
+        } else {
+            1.0
+        };
+        let smooth_step = |cur: &mut f32, target: f32| {
+            *cur += (target - *cur) * alpha;
+            if (*cur - target).abs() < 0.05 {
+                *cur = target;
+            }
+        };
+        smooth_step(&mut self.tb_smooth.cpu, sys_data.cpu_percent);
+        smooth_step(&mut self.tb_smooth.ram, sys_data.ram_percent);
+        smooth_step(&mut self.tb_smooth.gpu, sys_data.gpu_percent);
+        smooth_step(&mut self.tb_smooth.vram, sys_data.vram_percent);
+        smooth_step(&mut self.tb_smooth.dl, target_dl);
+        smooth_step(&mut self.tb_smooth.ul, target_ul);
+        smooth_step(&mut self.tb_smooth.fuel, q_data.gemini_5h_pct);
+
+        let decay = 8.0 * dt;
+        let update_peak = |pk: &mut f32, val: f32| {
+            if val >= *pk {
+                *pk = val;
+            } else {
+                *pk = (*pk - decay).max(val);
+            }
+        };
+        update_peak(&mut self.tb_smooth.pk_cpu, self.tb_smooth.cpu);
+        update_peak(&mut self.tb_smooth.pk_ram, self.tb_smooth.ram);
+        update_peak(&mut self.tb_smooth.pk_gpu, self.tb_smooth.gpu);
+        update_peak(&mut self.tb_smooth.pk_vram, self.tb_smooth.vram);
+        update_peak(&mut self.tb_smooth.pk_dl, self.tb_smooth.dl);
+        update_peak(&mut self.tb_smooth.pk_ul, self.tb_smooth.ul);
+
+        let sm = self.tb_smooth;
+        let fluid_on = self.config.fluid_graphs;
+
         ctx.show_viewport_immediate(vp_id, vp_builder, |vp_ctx, _class| {
+            if fluid_on {
+                vp_ctx.request_repaint_after(Duration::from_millis(22));
+            }
+            // Sculpted unified sports-car instrument binnacle (full stadium pill housing with layered glass sheen)
+            let dash_fill = Color32::from_rgb(
+                (theme.graph_bg.r() as u16 * 3 / 4) as u8,
+                (theme.graph_bg.g() as u16 * 3 / 4) as u8,
+                (theme.graph_bg.b() as u16 * 3 / 4) as u8,
+            );
+            let pill_r = ((gauge_h * 0.5).round() as u8).min(32);
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()
-                        .fill(theme.card_bg)
-                        .stroke(Stroke::new(1.0, theme.border))
-                        .corner_radius(egui::CornerRadius::same(5))
-                        .inner_margin(egui::Margin::symmetric(4, 2)),
+                        .fill(dash_fill)
+                        .stroke(Stroke::new(1.4, Color32::from_rgba_unmultiplied(theme.primary.r(), theme.primary.g(), theme.primary.b(), 155)))
+                        .corner_radius(egui::CornerRadius::same(pill_r))
+                        .inner_margin(egui::Margin::symmetric(12, 2)),
                 )
                 .show(vp_ctx, |ui| {
                     let total_rect = ui.max_rect();
+
+                    // Layered cockpit glass depth: subtle upper glass sheen band + inner recessed bevel + soft horizon line
+                    let bg_p = ui.painter();
+                    let upper_glass = Rect::from_min_max(
+                        Pos2::new(total_rect.left() + 6.0, total_rect.top()),
+                        Pos2::new(total_rect.right() - 6.0, total_rect.top() + total_rect.height() * 0.44),
+                    );
+                    bg_p.rect_filled(
+                        upper_glass,
+                        egui::CornerRadius::same(pill_r.saturating_sub(2)),
+                        Color32::from_rgba_unmultiplied(theme.text_bright.r(), theme.text_bright.g(), theme.text_bright.b(), 10),
+                    );
+                    bg_p.line_segment(
+                        [Pos2::new(total_rect.left() + 14.0, total_rect.top() + 0.5), Pos2::new(total_rect.right() - 14.0, total_rect.top() + 0.5)],
+                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(theme.text_bright.r(), theme.text_bright.g(), theme.text_bright.b(), 42)),
+                    );
+                    bg_p.line_segment(
+                        [Pos2::new(total_rect.left() + 18.0, total_rect.center().y), Pos2::new(total_rect.right() - 14.0, total_rect.center().y)],
+                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(theme.primary.r(), theme.primary.g(), theme.primary.b(), 24)),
+                    );
+                    bg_p.line_segment(
+                        [Pos2::new(total_rect.left() + 14.0, total_rect.bottom() - 0.5), Pos2::new(total_rect.right() - 14.0, total_rect.bottom() - 0.5)],
+                        Stroke::new(0.8, Color32::from_rgba_unmultiplied(theme.primary.r(), theme.primary.g(), theme.primary.b(), 55)),
+                    );
 
                     // Dedicated right-edge drag handle for interactive width resizing
                     let resize_strip = Rect::from_min_max(
@@ -3570,55 +3766,63 @@ impl NetMonitorApp {
                         focus_main = true;
                     }
 
-                    // Visual cyan glow indicator on right border when hovering/resizing
+                    // Visual glow indicator on right border when hovering/resizing
                     if resize_resp.hovered() || resize_resp.dragged() {
                         ui.painter().line_segment(
                             [
-                                Pos2::new(total_rect.right() - 2.0, total_rect.top() + 4.0),
-                                Pos2::new(total_rect.right() - 2.0, total_rect.bottom() - 4.0),
+                                Pos2::new(total_rect.right() - 2.0, total_rect.top() + 5.0),
+                                Pos2::new(total_rect.right() - 2.0, total_rect.bottom() - 5.0),
                             ],
-                            Stroke::new(2.0, ACCENT_CYAN),
+                            Stroke::new(2.0, theme.primary),
                         );
                     }
 
                     ui.horizontal_centered(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.spacing_mut().item_spacing.x = 2.0;
 
-                        // Subtle drag grip
-                        ui.label(RichText::new("⠿").color(theme.text_dim).size(12.0));
+                        // Subtle vector 2x3 tactile drag grip on far left
+                        let (grip_rect, _) = ui.allocate_exact_size(Vec2::new(8.0, gauge_h - 6.0), egui::Sense::hover());
+                        let gp = ui.painter_at(grip_rect);
+                        let dot_col = Color32::from_rgba_unmultiplied(theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), 130);
+                        for row in 0..3 {
+                            for col in 0..2 {
+                                let gx = grip_rect.center().x + if col == 0 { -1.8 } else { 1.8 };
+                                let gy = grip_rect.center().y + (row as f32 - 1.0) * 4.2;
+                                gp.circle_filled(pos2(gx, gy), 1.0, dot_col);
+                            }
+                        }
 
-                        // Space calculation: 1 grip (10px) + separators + gaps of 4px + right resize strip & margin
                         let show_quota = self.config.show_model_quota;
                         let count = if show_quota { 7.0 } else { 6.0 };
-                        let fixed_overhead = if show_quota { 78.0f32 } else { 69.0f32 };
-                        let sub_w = ((ui.available_width() - fixed_overhead) / count).floor().max(38.0);
+                        let fixed_overhead = 10.0 + (count + 1.0) * 2.0 + 4.0;
+                        let sub_w = ((ui.available_width() - fixed_overhead) / count).floor().max(46.0);
 
-                        // 1. CPU Gauge
-                        let cpu_val = format!("{:.0}", sys_data.cpu_percent);
+                        // 1. CPU Dial
+                        let cpu_val = format!("{:.0}", sm.cpu);
                         Self::draw_micro_gauge(
                             ui,
                             "CPU",
-                            sys_data.cpu_percent,
+                            sm.cpu,
                             &cpu_val,
                             sub_w,
                             gauge_h - 4.0,
-                            sys_data.cpu_percent,
+                            sm.pk_cpu,
                             theme,
+                            false,
                         );
 
-                        ui.separator();
-
-                        // 2. RAM Gauge (click to free RAM)
-                        let ram_val = format!("{:.0}", sys_data.ram_percent);
+                        // 2. RAM Dial (click to free RAM)
+                        let ram_val = format!("{:.0}", sm.ram);
                         let ram_rect = Self::draw_micro_gauge(
                             ui,
                             "RAM",
-                            sys_data.ram_percent,
+                            sm.ram,
                             &ram_val,
                             sub_w,
                             gauge_h - 4.0,
-                            sys_data.ram_percent,
+                            sm.pk_ram,
                             theme,
+                            false,
                         );
                         let ram_resp = ui
                             .interact(ram_rect, ui.id().with("tb_ram_clean"), egui::Sense::click())
@@ -3628,40 +3832,35 @@ impl NetMonitorApp {
                         }
                         Self::draw_micro_ram_clean_badge(ui, ram_rect, &ram_status, theme);
 
-                        ui.separator();
-
-                        // 3. GPU Gauge
-                        let gpu_val = format!("{:.0}", sys_data.gpu_percent);
+                        // 3. GPU Dial
+                        let gpu_val = format!("{:.0}", sm.gpu);
                         Self::draw_micro_gauge(
                             ui,
                             "GPU",
-                            sys_data.gpu_percent,
+                            sm.gpu,
                             &gpu_val,
                             sub_w,
                             gauge_h - 4.0,
-                            sys_data.gpu_percent,
+                            sm.pk_gpu,
                             theme,
+                            false,
                         );
 
-                        ui.separator();
-
-                        // 4. VRAM Gauge
-                        let vram_val = format!("{:.0}", sys_data.vram_percent);
+                        // 4. VRAM Dial
+                        let vram_val = format!("{:.0}", sm.vram);
                         Self::draw_micro_gauge(
                             ui,
                             "VRAM",
-                            sys_data.vram_percent,
+                            sm.vram,
                             &vram_val,
                             sub_w,
                             gauge_h - 4.0,
-                            sys_data.vram_percent,
+                            sm.pk_vram,
                             theme,
+                            false,
                         );
 
-                        ui.separator();
-
-                        // 5. DL Gauge
-                        let dl_pct = ((sys_data.net_dl_bps / 5_000_000.0) * 100.0).clamp(0.0, 100.0) as f32;
+                        // 5. DL Dial
                         let dl_val = if sys_data.net_dl_bps >= 1_000_000.0 {
                             format!("{:.1}M", sys_data.net_dl_bps / 1_000_000.0)
                         } else if sys_data.net_dl_bps >= 1_000.0 {
@@ -3672,18 +3871,16 @@ impl NetMonitorApp {
                         Self::draw_micro_gauge(
                             ui,
                             "DL",
-                            dl_pct,
+                            sm.dl,
                             &dl_val,
                             sub_w,
                             gauge_h - 4.0,
-                            dl_pct,
+                            sm.pk_dl,
                             theme,
+                            false,
                         );
 
-                        ui.separator();
-
-                        // 6. UL Gauge
-                        let ul_pct = ((sys_data.net_ul_bps / 2_000_000.0) * 100.0).clamp(0.0, 100.0) as f32;
+                        // 6. UL Dial
                         let ul_val = if sys_data.net_ul_bps >= 1_000_000.0 {
                             format!("{:.1}M", sys_data.net_ul_bps / 1_000_000.0)
                         } else if sys_data.net_ul_bps >= 1_000.0 {
@@ -3694,33 +3891,31 @@ impl NetMonitorApp {
                         Self::draw_micro_gauge(
                             ui,
                             "UL",
-                            ul_pct,
+                            sm.ul,
                             &ul_val,
                             sub_w,
                             gauge_h - 4.0,
-                            ul_pct,
+                            sm.pk_ul,
                             theme,
+                            false,
                         );
 
                         if show_quota {
-                            ui.separator();
-
-                            // 7. AI Model Quota / Fuel Gauge
-                            let q_data = self.quota.get_data();
-                            let fuel_pct = q_data.gemini_5h_pct;
-                            let fuel_val = format!("{:.0}", fuel_pct);
+                            // 7. AI Model Quota / Fuel Dial (inverted: full = healthy, low = red reserve alert!)
+                            let fuel_val = format!("{:.0}", sm.fuel);
                             let fuel_rect = Self::draw_micro_gauge(
                                 ui,
                                 "FUEL",
-                                fuel_pct,
+                                sm.fuel,
                                 &fuel_val,
                                 sub_w,
                                 gauge_h - 4.0,
-                                fuel_pct,
+                                0.0,
                                 theme,
+                                true,
                             );
                             let tip = format!(
-                                "⛽ Antigravity AI Model Fuel\nGemini 5h Limit: {:.0}% ({})\nGemini Wk Limit: {:.0}% ({})\nClaude/GPT 5h: {:.0}% · Wk: {:.0}%\nLanguage Server: {}",
+                                "AI Model Fuel (Antigravity)\nGemini 5h Limit: {:.0}% ({})\nGemini Wk Limit: {:.0}% ({})\nClaude/GPT 5h: {:.0}% · Wk: {:.0}%\nLanguage Server: {}",
                                 q_data.gemini_5h_pct, q_data.gemini_5h_reset,
                                 q_data.gemini_weekly_pct, q_data.gemini_weekly_reset,
                                 q_data.claude_5h_pct, q_data.claude_weekly_pct,
@@ -3748,8 +3943,8 @@ impl NetMonitorApp {
         // Dedicated context menu that floats cleanly ABOVE the taskbar into full view
         if self.show_taskbar_context_menu {
             let menu_vp_id = egui::ViewportId::from_hash_of("netmonitor_taskbar_menu_vp");
-            let menu_w = 265.0f32;
-            let menu_h = 245.0f32;
+            let menu_w = 296.0f32;
+            let menu_h = 250.0f32;
             let menu_x = current_x.clamp(8.0, (scr_w - menu_w - 8.0).max(8.0));
             let menu_y = (y_pos - menu_h - 6.0).max(10.0);
 
@@ -3769,7 +3964,6 @@ impl NetMonitorApp {
             let mut reset_to_x: Option<f32> = None;
             let mut set_width: Option<f32> = None;
             let mut toggle_hide = false;
-            let mut apply_ferrari = false;
             let mut request_focus_main = false;
             let mut trigger_clean_now = false;
 
@@ -3779,14 +3973,14 @@ impl NetMonitorApp {
                         egui::Frame::new()
                             .fill(theme.card_bg)
                             .stroke(Stroke::new(1.0, theme.border))
-                            .corner_radius(egui::CornerRadius::same(6))
+                            .corner_radius(egui::CornerRadius::same(8))
                             .inner_margin(egui::Margin::symmetric(10, 8)),
                     )
                     .show(m_ctx, |ui| {
                         ui.label(RichText::new("⚙ TASKBAR MICRO-GAUGES").strong().color(theme.primary));
                         ui.separator();
 
-                        if ui.button(RichText::new("🧹 Clean Working Set RAM Now").color(theme.primary).strong()).clicked() {
+                        if ui.button(RichText::new("✦ Clean Working Set RAM Now").color(theme.primary).strong()).clicked() {
                             trigger_clean_now = true;
                             close_menu = true;
                         }
@@ -3827,59 +4021,51 @@ impl NetMonitorApp {
                         });
 
                         ui.separator();
-                        if ui.button("📍 Snap Lower-Left Empty Space").clicked() {
+                        if ui.button("⌖ Snap Lower-Left Empty Space").clicked() {
                             reset_to_x = Some(48.0);
                             close_menu = true;
                         }
-                        if ui.button("📍 Snap Far-Left (x=16)").clicked() {
+                        if ui.button("⌖ Snap Far-Left (x=16)").clicked() {
                             reset_to_x = Some(16.0);
                             close_menu = true;
                         }
-                        if ui.button("📍 Snap Center-Left (x=180)").clicked() {
+                        if ui.button("⌖ Snap Center-Left (x=180)").clicked() {
                             reset_to_x = Some(180.0);
                             close_menu = true;
                         }
                         ui.separator();
                         ui.label(RichText::new("Width Preset:").color(theme.secondary).size(10.0));
                         ui.horizontal(|ui| {
-                            if ui.button("460px (Compact)").clicked() {
-                                set_width = Some(460.0);
-                                close_menu = true;
-                            }
-                            if ui.button("520px (Default)").clicked() {
-                                set_width = Some(520.0);
-                                close_menu = true;
-                            }
-                            if ui.button("580px (Wide)").clicked() {
-                                set_width = Some(580.0);
-                                close_menu = true;
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            for &(lbl, w_val) in &[
+                                ("460px", 460.0f32),
+                                ("520px", 520.0),
+                                ("580px", 580.0),
+                                ("640px", 640.0),
+                            ] {
+                                let active = (gauge_w - w_val).abs() < 15.0;
+                                if ui.selectable_label(active, lbl).clicked() {
+                                    set_width = Some(w_val);
+                                    close_menu = true;
+                                }
                             }
                         });
                         ui.separator();
-                        if ui.button("🏎 Ferrari Digital Dash Theme").clicked() {
-                            apply_ferrari = true;
-                            close_menu = true;
-                        }
-                        if ui.button("🪟 Bring Main Widget to Front").clicked() {
+                        if ui.button("◈ Bring Main Widget to Front").clicked() {
                             request_focus_main = true;
                             close_menu = true;
                         }
-                        ui.separator();
-                        if ui.button("❌ Hide Taskbar Gauges").clicked() {
-                            toggle_hide = true;
-                            close_menu = true;
-                        }
-                        if ui.button("✕ Close Menu").clicked() {
-                            close_menu = true;
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("× Hide Taskbar Gauges").clicked() {
+                                toggle_hide = true;
+                                close_menu = true;
+                            }
+                            if ui.button("Close").clicked() {
+                                close_menu = true;
+                            }
+                        });
                     });
             });
-
-            if apply_ferrari {
-                self.config.apply_theme_preset("ferrari_dash");
-                self.sync_graph_settings();
-                self.config.save();
-            }
 
             if request_focus_main {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -3960,112 +4146,186 @@ impl NetMonitorApp {
         h: f32,
         peak_percent: f32,
         theme: &config::ThemePalette,
+        is_fuel: bool,
     ) -> Rect {
         let (rect, _resp) = ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::hover());
         let p = ui.painter_at(rect);
         let pct = percent.clamp(0.0, 100.0);
+        let now_t = ui.input(|i| i.time);
+        let low_fuel_alarm = is_fuel && pct < 15.0;
+        let is_flash = if is_fuel {
+            low_fuel_alarm && ((now_t * 6.0) as i32 % 2 == 0)
+        } else {
+            pct > 90.0 && ((now_t * 10.0) as i32 % 2 == 0)
+        };
 
-        // 1. Shift-light LED strip across the top of this gauge
-        let led_count = 10;
-        let led_r = 1.8f32;
-        let led_spacing = (w - 10.0) / (led_count as f32);
-        let led_y = rect.top() + 3.5;
-        let lit_leds = ((pct / 100.0) * led_count as f32).round() as usize;
-        let is_flash = pct > 90.0 && ((ui.input(|i| i.time) * 10.0) as i32 % 2 == 0);
+        // Sculpted 240-degree circular sports-car instrument dial on the left, integrated digital readout on the right
+        let rad = ((h * 0.45).min(w * 0.28)).clamp(11.0, 16.5);
+        let dial_cx = rect.left() + rad + 3.0;
+        let dial_cy = rect.center().y + 0.5;
+        let center = pos2(dial_cx, dial_cy);
 
-        for i in 0..led_count {
-            let t = i as f32 / (led_count - 1) as f32;
-            let led_col = if t < 0.55 {
-                theme.secondary
-            } else if t < 0.80 {
-                theme.warning
-            } else {
-                theme.redline
-            };
-
-            let cx = rect.left() + 5.0 + (i as f32 + 0.5) * led_spacing;
-            let center = pos2(cx, led_y);
-
-            if i < lit_leds {
-                let col = if is_flash { Color32::WHITE } else { led_col };
-                p.circle_filled(center, led_r * 1.8, Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 45));
-                p.circle_filled(center, led_r, col);
-            } else {
-                p.circle_filled(center, led_r, Color32::from_rgba_unmultiplied(led_col.r(), led_col.g(), led_col.b(), 25));
-                p.circle_stroke(center, led_r, Stroke::new(0.6, Color32::from_rgba_unmultiplied(led_col.r(), led_col.g(), led_col.b(), 55)));
-            }
-        }
-
-        // 2. Lower Body: Semicircular Analog Dial on Left, Big Digital Readout on Right
-        let body_top = led_y + led_r + 2.5;
-        let body_bottom = rect.bottom() - 1.5;
-        let body_h = body_bottom - body_top;
-
-        let rad = (body_h - 2.0).clamp(9.0, 15.0);
-        let dial_cx = rect.left() + rad + 4.0;
-        let dial_cy = body_bottom - 1.0;
-
-        let ang = |f: f32| std::f32::consts::PI * (1.0 - f.clamp(0.0, 1.0));
+        // 240-degree radial sweep: 7:30 o'clock (210 deg) clockwise over 12:00 (90 deg) to 4:30 o'clock (-30 deg)
+        let start_deg = 210.0f32.to_radians();
+        let sweep_rad = 240.0f32.to_radians();
+        let ang = |f: f32| start_deg - f.clamp(0.0, 1.0) * sweep_rad;
         let pt = |f: f32, rr: f32| {
             let a = ang(f);
             pos2(dial_cx + rr * a.cos(), dial_cy - rr * a.sin())
         };
-
         let arc_pts = |from: f32, to: f32, rr: f32| -> Vec<Pos2> {
-            let steps = 18;
+            let steps = 22;
             (0..=steps).map(|k| pt(from + (to - from) * (k as f32 / steps as f32), rr)).collect()
         };
 
-        // Dial tracks: 0..80% yellow/secondary, 80..100% redline
-        p.add(PathShape::line(arc_pts(0.0, 0.80, rad), Stroke::new(2.2, Color32::from_rgba_unmultiplied(theme.secondary.r(), theme.secondary.g(), theme.secondary.b(), 45))));
-        p.add(PathShape::line(arc_pts(0.80, 1.0, rad), Stroke::new(2.2, Color32::from_rgba_unmultiplied(theme.redline.r(), theme.redline.g(), theme.redline.b(), 90))));
+        // 1. Recessed circular instrument pod bezel (machined outer chrome + deep dial face + subtle inner rim)
+        p.circle_filled(center, rad + 1.8, Color32::from_rgba_unmultiplied(0, 0, 0, 195));
+        p.circle_filled(center, rad - 0.8, Color32::from_rgba_unmultiplied(theme.card_bg.r() / 2, theme.card_bg.g() / 2, theme.card_bg.b() / 2, 160));
+        let bezel_col = if low_fuel_alarm && is_flash {
+            theme.redline
+        } else {
+            Color32::from_rgba_unmultiplied(theme.primary.r(), theme.primary.g(), theme.primary.b(), 85)
+        };
+        p.circle_stroke(center, rad + 1.6, Stroke::new(1.1, bezel_col));
+        p.circle_stroke(center, rad + 0.5, Stroke::new(0.6, Color32::from_rgba_unmultiplied(theme.text_bright.r(), theme.text_bright.g(), theme.text_bright.b(), 38)));
 
-        // Active illuminated sweep arc
+        // 2. Dial arc tracks (radius inset slightly inside bezel)
+        let r_arc = rad - 1.5;
+        if is_fuel {
+            // Reserve zone on bottom-left (0..20% red), healthy scale 20..100%
+            p.add(PathShape::line(arc_pts(0.0, 0.20, r_arc), Stroke::new(2.4, Color32::from_rgba_unmultiplied(theme.redline.r(), theme.redline.g(), theme.redline.b(), 140))));
+            p.add(PathShape::line(arc_pts(0.20, 1.0, r_arc), Stroke::new(2.0, Color32::from_rgba_unmultiplied(theme.secondary.r(), theme.secondary.g(), theme.secondary.b(), 52))));
+        } else {
+            p.add(PathShape::line(arc_pts(0.0, 0.80, r_arc), Stroke::new(2.0, Color32::from_rgba_unmultiplied(theme.secondary.r(), theme.secondary.g(), theme.secondary.b(), 52))));
+            p.add(PathShape::line(arc_pts(0.80, 1.0, r_arc), Stroke::new(2.4, Color32::from_rgba_unmultiplied(theme.redline.r(), theme.redline.g(), theme.redline.b(), 120))));
+        }
+
+        // 3. Illuminated active sweep arc with backlit phosphor bloom halo
+        let active_col = if is_fuel {
+            if pct < 15.0 {
+                if is_flash { theme.warning } else { theme.redline }
+            } else if pct < 35.0 {
+                theme.warning
+            } else {
+                theme.primary
+            }
+        } else {
+            if pct > 80.0 {
+                if is_flash { Color32::WHITE } else { theme.redline }
+            } else if pct > 55.0 {
+                theme.warning
+            } else {
+                theme.primary
+            }
+        };
         if pct > 1.0 {
             let sweep_f = (pct / 100.0).clamp(0.0, 1.0);
-            let active_col = if pct > 80.0 { theme.redline } else if pct > 55.0 { theme.warning } else { theme.primary };
-            p.add(PathShape::line(arc_pts(0.0, sweep_f, rad), Stroke::new(2.4, active_col)));
+            let pts = arc_pts(0.0, sweep_f, r_arc);
+            // Soft outer phosphor glow pass
+            p.add(PathShape::line(
+                pts.clone(),
+                Stroke::new(4.8, Color32::from_rgba_unmultiplied(active_col.r(), active_col.g(), active_col.b(), 42)),
+            ));
+            // Crisp bright core sweep pass
+            p.add(PathShape::line(pts, Stroke::new(2.3, active_col)));
         }
 
-        // Dial tick marks
+        // 4. Fine radial tick marks around the 240-degree face
         for k in 0..=8 {
             let f = k as f32 / 8.0;
-            let inner = if k % 4 == 0 { rad - 4.5 } else { rad - 2.5 };
-            let tick_col = if f >= 0.8 { theme.redline } else { theme.text_dim };
-            p.line_segment([pt(f, inner), pt(f, rad - 0.5)], Stroke::new(0.8, Color32::from_rgba_unmultiplied(tick_col.r(), tick_col.g(), tick_col.b(), 180)));
+            let is_major = k % 4 == 0;
+            let inner = if is_major { r_arc - 3.8 } else { r_arc - 2.1 };
+            let tick_col = if is_fuel {
+                if f <= 0.2 { theme.redline } else if is_major { theme.text_bright } else { theme.text_dim }
+            } else {
+                if f >= 0.8 { theme.redline } else if is_major { theme.text_bright } else { theme.text_dim }
+            };
+            p.line_segment(
+                [pt(f, inner), pt(f, r_arc - 0.3)],
+                Stroke::new(if is_major { 1.0 } else { 0.75 }, Color32::from_rgba_unmultiplied(tick_col.r(), tick_col.g(), tick_col.b(), if is_major { 215 } else { 155 })),
+            );
         }
 
-        // Needle + Pivot Hub
+        // Tiny E / F indicators at bottom notch of the FUEL dial
+        if is_fuel {
+            p.text(
+                pos2(dial_cx - rad * 0.42, dial_cy + rad * 0.62),
+                egui::Align2::CENTER_CENTER,
+                "E",
+                egui::FontId::monospace(6.0),
+                if low_fuel_alarm { theme.redline } else { theme.text_dim },
+            );
+            p.text(
+                pos2(dial_cx + rad * 0.42, dial_cy + rad * 0.62),
+                egui::Align2::CENTER_CENTER,
+                "F",
+                egui::FontId::monospace(6.0),
+                theme.text_dim,
+            );
+        }
+
+        // 5. Sweeping damped needle with glow halo + machined metallic center hub
         let needle_val = pct / 100.0;
-        let needle_color = theme.tertiary;
-        p.line_segment([pt(needle_val, 2.0), pt(needle_val, rad - 2.0)], Stroke::new(1.8, needle_color));
-        p.line_segment([pt(needle_val, rad - 4.0), pt(needle_val, rad - 1.5)], Stroke::new(1.8, Color32::WHITE));
-        p.circle_filled(pos2(dial_cx, dial_cy), 2.4, needle_color);
+        let needle_col = theme.tertiary;
+        p.line_segment(
+            [pt(needle_val, 1.5), pt(needle_val, r_arc - 1.2)],
+            Stroke::new(3.4, Color32::from_rgba_unmultiplied(needle_col.r(), needle_col.g(), needle_col.b(), 50)),
+        );
+        p.line_segment([pt(needle_val, 1.5), pt(needle_val, r_arc - 1.5)], Stroke::new(1.6, needle_col));
+        p.line_segment([pt(needle_val, r_arc - 4.0), pt(needle_val, r_arc - 1.0)], Stroke::new(1.6, Color32::WHITE));
+        p.circle_filled(center, 2.7, needle_col);
+        p.circle_filled(center, 1.3, Color32::from_rgb(18, 22, 20));
+        p.circle_filled(pos2(dial_cx - 0.4, dial_cy - 0.4), 0.6, Color32::from_rgba_unmultiplied(255, 255, 255, 160));
 
-        // Peak hold pip
-        if peak_percent > 3.0 {
+        // Peak hold pip (load gauges only)
+        if !is_fuel && peak_percent > 3.0 {
             let pk_f = (peak_percent / 100.0).clamp(0.0, 1.0);
-            p.line_segment([pt(pk_f, rad - 5.0), pt(pk_f, rad + 1.0)], Stroke::new(1.4, Color32::WHITE));
+            p.line_segment([pt(pk_f, r_arc - 3.5), pt(pk_f, r_arc + 1.0)], Stroke::new(1.2, Color32::WHITE));
         }
 
-        // 3. Right side: Title label on top, Bold Digital Readout below
-        let text_x = rect.right() - 3.0;
+        // Low-fuel warning lamp inside dial ONLY when fuel < 15%
+        if low_fuel_alarm {
+            let lamp_pos = pos2(dial_cx, dial_cy + rad * 0.42);
+            let lcol = if is_flash { theme.redline } else { theme.warning };
+            p.circle_filled(lamp_pos, 3.4, Color32::from_rgba_unmultiplied(lcol.r(), lcol.g(), lcol.b(), 80));
+            p.circle_filled(lamp_pos, 1.7, lcol);
+        }
 
+        // 6. Integrated floating digital readout & micro-status dot seamlessly beside the circular dial
+        let readout_x = (dial_cx + rad + 5.5).min(rect.right() - 22.0);
+        let status_dot_pos = pos2(readout_x + 2.0, dial_cy - 5.5);
+        p.circle_filled(status_dot_pos, 1.5, Color32::from_rgba_unmultiplied(active_col.r(), active_col.g(), active_col.b(), 210));
+        let title_col = if low_fuel_alarm { theme.redline } else { theme.text_dim };
         p.text(
-            pos2(text_x, body_top - 1.0),
-            egui::Align2::RIGHT_TOP,
+            pos2(readout_x + 5.5, dial_cy - 1.5),
+            egui::Align2::LEFT_BOTTOM,
             title,
             egui::FontId::monospace(7.5),
-            theme.text_dim,
+            title_col,
         );
 
-        let num_font_size = if value_display.len() >= 4 { 13.0 } else { 15.0 };
+        let num_font_size = if value_display.len() >= 4 {
+            11.0
+        } else if value_display.len() == 3 {
+            12.0
+        } else {
+            13.5
+        };
+        let num_col = if low_fuel_alarm { theme.redline } else { theme.text_bright };
+        // Subtle drop-shadow for crisp contrast
         p.text(
-            pos2(text_x, body_bottom + 1.0),
-            egui::Align2::RIGHT_BOTTOM,
+            pos2(readout_x + 0.8, dial_cy + 0.3),
+            egui::Align2::LEFT_TOP,
             value_display,
             egui::FontId::monospace(num_font_size),
-            theme.text_bright,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 170),
+        );
+        p.text(
+            pos2(readout_x, dial_cy - 0.5),
+            egui::Align2::LEFT_TOP,
+            value_display,
+            egui::FontId::monospace(num_font_size),
+            num_col,
         );
         rect
     }

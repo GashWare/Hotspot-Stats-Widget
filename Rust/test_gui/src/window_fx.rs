@@ -147,18 +147,38 @@ pub fn apply_window_opacity(opacity: f32) {
     }
 }
 
-/// Ensures that a window (such as the taskbar micro-gauges) stays topmost
-/// and has the tool-window attribute so it is not clipped or occluded by the taskbar.
+/// Ensures that a window (such as the taskbar micro-gauges) stays topmost,
+/// has the tool-window attribute, and optionally clips its Win32 region to a true
+/// rounded stadium pill so no black square corners can ever appear on Windows.
 pub fn pin_taskbar_window_topmost(title: &str) {
+    pin_taskbar_window_topmost_shaped(title, false);
+}
+
+pub fn pin_taskbar_window_topmost_pill(title: &str) {
+    pin_taskbar_window_topmost_shaped(title, true);
+}
+
+fn pin_taskbar_window_topmost_shaped(title: &str, clip_pill: bool) {
     #[cfg(target_os = "windows")]
     {
         use std::ffi::c_void;
+        use std::sync::Mutex;
+
+        #[repr(C)]
+        struct RECT {
+            left: i32,
+            top: i32,
+            right: i32,
+            bottom: i32,
+        }
 
         #[link(name = "user32")]
         unsafe extern "system" {
             fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> *mut c_void;
             fn GetWindowLongW(hWnd: *mut c_void, nIndex: i32) -> i32;
             fn SetWindowLongW(hWnd: *mut c_void, nIndex: i32, dwNewLong: i32) -> i32;
+            fn GetClientRect(hWnd: *mut c_void, lpRect: *mut RECT) -> i32;
+            fn SetWindowRgn(hWnd: *mut c_void, hRgn: *mut c_void, bRedraw: i32) -> i32;
             fn SetWindowPos(
                 hWnd: *mut c_void,
                 hWndInsertAfter: *mut c_void,
@@ -170,6 +190,30 @@ pub fn pin_taskbar_window_topmost(title: &str) {
             ) -> i32;
         }
 
+        #[link(name = "gdi32")]
+        unsafe extern "system" {
+            fn CreateRoundRectRgn(
+                x1: i32,
+                y1: i32,
+                x2: i32,
+                y2: i32,
+                w: i32,
+                h: i32,
+            ) -> *mut c_void;
+        }
+
+        #[link(name = "dwmapi")]
+        unsafe extern "system" {
+            fn DwmSetWindowAttribute(
+                hwnd: *mut c_void,
+                dwAttribute: u32,
+                pvAttribute: *const c_void,
+                cbAttribute: u32,
+            ) -> i32;
+        }
+
+        static LAST_PILL_RGN: Mutex<(usize, i32, i32)> = Mutex::new((0, 0, 0));
+
         const GWL_EXSTYLE: i32 = -20;
         const WS_EX_TOOLWINDOW: i32 = 0x00000080;
         const WS_EX_TOPMOST: i32 = 0x00000008;
@@ -177,6 +221,10 @@ pub fn pin_taskbar_window_topmost(title: &str) {
         const SWP_NOSIZE: u32 = 0x0001;
         const SWP_NOMOVE: u32 = 0x0002;
         const SWP_NOACTIVATE: u32 = 0x0010;
+        const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+        const DWMWA_BORDER_COLOR: u32 = 34;
+        const DWMWCP_DONOTROUND: u32 = 1;
+        const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
 
         let w_title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe {
@@ -186,13 +234,46 @@ pub fn pin_taskbar_window_topmost(title: &str) {
                 if (ex_style & WS_EX_TOOLWINDOW) == 0 || (ex_style & WS_EX_TOPMOST) == 0 {
                     SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_TOOLWINDOW | WS_EX_TOPMOST);
                 }
+                let pref = DWMWCP_DONOTROUND;
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_WINDOW_CORNER_PREFERENCE,
+                    &pref as *const u32 as *const c_void,
+                    std::mem::size_of::<u32>() as u32,
+                );
+                let border_none = DWMWA_COLOR_NONE;
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_BORDER_COLOR,
+                    &border_none as *const u32 as *const c_void,
+                    std::mem::size_of::<u32>() as u32,
+                );
+
+                // Physically clip the HWND to an exact stadium pill so corners outside
+                // the rounded border are 100% gone (no black square corners on WGL/Windows).
+                if clip_pill {
+                    let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    if GetClientRect(hwnd, &mut rc) != 0 && rc.right > 0 && rc.bottom > 0 {
+                        let key = (hwnd as usize, rc.right, rc.bottom);
+                        let mut last = LAST_PILL_RGN.lock().unwrap();
+                        if *last != key {
+                            let rgn = CreateRoundRectRgn(0, 0, rc.right + 1, rc.bottom + 1, rc.bottom, rc.bottom);
+                            if !rgn.is_null() {
+                                // Windows takes ownership of rgn upon successful SetWindowRgn
+                                SetWindowRgn(hwnd, rgn, 1);
+                                *last = key;
+                            }
+                        }
+                    }
+                }
+
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
         }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = title;
+        let _ = (title, clip_pill);
     }
 }
 

@@ -233,6 +233,8 @@ pub struct WidgetConfig {
     pub show_clients: bool,
     #[serde(default = "default_true")]
     pub show_model_quota: bool,
+    #[serde(default = "default_true")]
+    pub show_hotspot_controls: bool,
     pub module_order: Vec<String>,
     pub module_heights: HashMap<String, f32>,
     pub theme: String,
@@ -343,6 +345,7 @@ impl Default for WidgetConfig {
             show_bluetooth: true,
             show_clients: true,
             show_model_quota: true,
+            show_hotspot_controls: true,
             module_order: vec![
                 "network".to_string(),
                 "bluetooth".to_string(),

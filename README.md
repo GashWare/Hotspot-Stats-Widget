@@ -31,12 +31,14 @@
   - **⚡ 5-Hour Sprint Tank**: Tracks the immediate 5-hour rolling demand window with exact percentage remaining and live reset countdown (e.g., `⏱ 4h 34m`).
   - **⛽ Weekly Reserve Tank**: Tracks total tier weekly capacity with percentage remaining and reset duration (e.g., `⏱ 4d 21h`).
   - **🤖 Claude & GPT Models (3P)**: Sub-gauge tracking third-party model limits.
-- **Automotive Fuel Gauge Styling**:
-  - **Ferrari Dash**: Dual analog sweeping needle dials with `E` to `F` tick marks, illuminated active arcs, needle pivot hubs, and glowing low-fuel warning LEDs.
-  - **C4 Corvette Cockpit**: Dual ascending 7-segment digital LCD wedges with `[E ▪▪▪▪▪▪▪▪▪ F]` segmented bars and flashing `[LOW FUEL]` annunciator boxes.
-  - **Nissan 300ZX**: Dual segmented electronic cockpit ladder gauges with authentic 80s Z31 phosphor styling.
-  - **Retro Amber & VFD Green**: Classic illuminated dual fuel chambers with `E ━━ 1/2 ━━ F` graduations.
-- **Low Fuel Warning Lamp**: Automatically illuminates and pulses when capacity drops below 15% (matching Antigravity's low-capacity alert indicator).
+- **6 Swappable AI Fuel Tank Gauge Styles** (Right-click the AI Fuel Tank → **AI Fuel Gauge Style**):
+  - **Theme-Matched Dash (Auto)**: Automatically adapts to Ferrari dials, C4 Corvette LCD wedges, Nissan 300ZX ladders, or Classic chambers.
+  - **Twin Analog Fuel Dials**: Dual sweeping semicircular needles with `E 1/4 1/2 3/4 F` ticks and left-side red reserve zone.
+  - **Digital Segmented LCD Bars**: Multi-segment horizontal LCD blocks with digital readouts.
+  - **Twin Vertical Fuel Cells**: Sight-glass fuel tubes with liquid meniscus, quarter-tank graduations, and reserve tint.
+  - **Minimalist Ring Gauges**: Circular progress rings with centered percentages and low-fuel alert dot.
+  - **Cockpit HUD Telemetry**: Avionics split-bar HUD with hatched 15% reserve zone, white caret pointer, and `LOW FUEL` annunciator.
+- **Low Fuel Warning Lamp**: Automatically illuminates and pulses when capacity drops below 15% (never flashes redline when full at 100%).
 - **Zero-Config Auto-Discovery**: Automatically detects active language server ports and CSRF tokens from environment variables, daemon state files (`~/.gemini/antigravity/daemon/hub_*.json`), or cached bridges.
 
 ### 2. 📊 Hardware & System Telemetry
@@ -61,11 +63,11 @@
 - Real-time Bluetooth adapter status, device discovery, signal RSSI meters, battery percentages, and pairing states.
 - Clean connection toggling for wireless headphones and input peripherals.
 
-### 6. 📌 Taskbar Micro-Gauges
-- An independent, transparent, always-on-top companion window designed to sit docked directly above the Windows taskbar.
-- Compact micro-dials for **CPU**, **RAM**, **GPU**, **VRAM**, **DL**, **UL**, and **FUEL**.
-- Click the RAM micro-gauge anytime to instantly purge memory working sets.
-- Hover or click the FUEL micro-gauge for instant quota diagnostics.
+### 6. 📌 Unified Taskbar Instrument Cluster
+- An independent, always-on-top stadium-pill cockpit binnacle (physically region-clipped with Win32 `CreateRoundRectRgn` for crisp rounded edges with zero boxy corners) docked directly above the Windows taskbar.
+- **7 Fluid 240° Circular Dials**: Smoothly damped ~45–60 FPS analog needles with backlit phosphor glow, machined bezels, and floating digital readouts for **CPU**, **RAM**, **GPU**, **VRAM**, **DL**, **UL**, and **FUEL** (with inverted low-fuel reserve warning on the left).
+- Click the **RAM** dial anytime to instantly purge working sets; hover **FUEL** for full quota details.
+- **Per-Widget Context Menus**: Right-clicking any specific module on the main widget shows only options tailored to that gauge/module, while right-clicking the header or background opens the global NetMonitor menu (including toggling the **Hotspot Controls Footer** on or off).
 
 ---
 

@@ -939,25 +939,28 @@ pub fn draw_fuel_gauge(
     quota: &crate::quota::ModelQuotaData,
     th: &ThemePalette,
     t: f32,
-    _style: &str,
+    style: &str,
 ) {
     let (w, h) = (rect.width(), rect.height());
     if w < 60.0 || h < 20.0 {
         return;
     }
 
-    // Top Header: "⛽ AI FUEL" on left, Claude/GPT 3P summary on right
+    // Top Header: "AI FUEL TANK" on left, Claude/GPT 3P summary on right
     let header_y = rect.top() + 1.0;
-    let pump_col = if quota.gemini_5h_pct < 15.0 || quota.gemini_weekly_pct < 15.0 {
+    let any_low = quota.gemini_5h_pct < 15.0 || quota.gemini_weekly_pct < 15.0;
+    let pump_col = if any_low {
         if ((t * 4.0) as i32) % 2 == 0 { th.redline } else { th.warning }
     } else {
         th.primary
     };
 
-    let title = if quota.is_connected {
-        "⛽ AI FUEL TANK"
+    let title = if !quota.is_connected {
+        "AI FUEL [CONNECTING...]"
+    } else if any_low {
+        "AI FUEL [LOW RESERVE]"
     } else {
-        "⛽ AI FUEL [CONNECTING...]"
+        "AI FUEL TANK"
     };
     p.text(
         pos2(rect.left() + 4.0, header_y),
@@ -987,27 +990,60 @@ pub fn draw_fuel_gauge(
     let left_tank = Rect::from_min_size(body_rect.min, Vec2::new(tank_w, body_rect.height()));
     let right_tank = Rect::from_min_size(pos2(body_rect.left() + tank_w + gap, body_rect.top()), Vec2::new(tank_w, body_rect.height()));
 
-    match th.id.as_str() {
-        "ferrari_dash" => {
+    match style {
+        "twin_dial" => {
             draw_ferrari_fuel_dial(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
             draw_ferrari_fuel_dial(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
         }
-        "corvette_red" => {
+        "digital_bar" => {
             draw_corvette_fuel_wedge(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
             draw_corvette_fuel_wedge(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
         }
-        "nissan_300zx" => {
+        "vertical_tubes" => {
+            draw_vertical_fuel_cell(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
+            draw_vertical_fuel_cell(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
+        }
+        "arc_rings" => {
+            draw_ring_fuel_gauge(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
+            draw_ring_fuel_gauge(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
+        }
+        "hud_telemetry" => {
+            draw_hud_fuel_gauge(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
+            draw_hud_fuel_gauge(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
+        }
+        "block" => {
             draw_nissan_fuel_ladder(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
             draw_nissan_fuel_ladder(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
         }
-        _ => {
+        "line" => {
             draw_classic_fuel_gauge(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
             draw_classic_fuel_gauge(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
+        }
+        _ => {
+            // "dash" / Theme-Matched Auto
+            match th.id.as_str() {
+                "ferrari_dash" => {
+                    draw_ferrari_fuel_dial(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
+                    draw_ferrari_fuel_dial(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
+                }
+                "corvette_red" => {
+                    draw_corvette_fuel_wedge(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
+                    draw_corvette_fuel_wedge(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
+                }
+                "nissan_300zx" => {
+                    draw_nissan_fuel_ladder(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
+                    draw_nissan_fuel_ladder(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
+                }
+                _ => {
+                    draw_classic_fuel_gauge(p, left_tank, "5H SPRINT", quota.gemini_5h_pct, &quota.gemini_5h_reset, th, t);
+                    draw_classic_fuel_gauge(p, right_tank, "WEEKLY MAIN", quota.gemini_weekly_pct, &quota.gemini_weekly_reset, th, t);
+                }
+            }
         }
     }
 }
 
-/// Ferrari Dash: Semicircular sweeping needle fuel dial with E .. F scale and low-fuel warning lamp
+/// Ferrari Dash / Twin Analog Dial: Semicircular sweeping needle fuel dial with E .. F scale & left-side red reserve zone
 fn draw_ferrari_fuel_dial(
     p: &Painter,
     r: Rect,
@@ -1019,8 +1055,8 @@ fn draw_ferrari_fuel_dial(
 ) {
     let (w, h) = (r.width(), r.height());
     let low_fuel = pct < 15.0;
-    let rad = (h - 6.0).min(w * 0.38).clamp(10.0, 32.0);
-    let cx = r.left() + rad + 6.0;
+    let rad = (h - 6.0).min(w * 0.34).clamp(10.0, 30.0);
+    let cx = r.left() + rad + 8.0;
     let cy = r.bottom() - 2.0;
 
     let ang = |f: f32| std::f32::consts::PI * (1.0 - f.clamp(0.0, 1.0));
@@ -1028,50 +1064,60 @@ fn draw_ferrari_fuel_dial(
         let a = ang(f);
         pos2(cx + rr * a.cos(), cy - rr * a.sin())
     };
+    let arc_pts = |from: f32, to: f32, rr: f32| -> Vec<Pos2> {
+        let steps = 20;
+        (0..=steps).map(|k| pt(from + (to - from) * (k as f32 / steps as f32), rr)).collect()
+    };
 
-    // Track arc
-    let steps = 24;
-    let track_pts: Vec<Pos2> = (0..=steps).map(|k| pt(k as f32 / steps as f32, rad)).collect();
-    p.add(PathShape::line(track_pts, Stroke::new(2.5, a(th.secondary, 45))));
+    // Track arcs: LEFT 0..0.18 is red reserve zone, 0.18..1.0 is normal secondary track
+    p.add(PathShape::line(arc_pts(0.0, 0.18, rad), Stroke::new(2.8, a(th.redline, 110))));
+    p.add(PathShape::line(arc_pts(0.18, 1.0, rad), Stroke::new(2.5, a(th.secondary, 45))));
 
-    // Active sweep arc
+    // Active sweep arc (healthy primary when full, warning when <35%, pulsing red when <15%)
     if pct > 0.5 {
         let sweep_f = (pct / 100.0).clamp(0.0, 1.0);
-        let active_pts: Vec<Pos2> = (0..=steps).map(|k| pt((k as f32 / steps as f32) * sweep_f, rad)).collect();
-        let active_col = if low_fuel { th.redline } else if pct < 35.0 { th.warning } else { th.primary };
-        p.add(PathShape::line(active_pts, Stroke::new(2.8, active_col)));
+        let active_col = if low_fuel {
+            if ((t * 4.0) as i32) % 2 == 0 { th.redline } else { th.warning }
+        } else if pct < 35.0 {
+            th.warning
+        } else {
+            th.primary
+        };
+        p.add(PathShape::line(arc_pts(0.0, sweep_f, rad), Stroke::new(2.8, active_col)));
     }
 
     // Tick marks: E (0.0), 1/4 (0.25), 1/2 (0.50), 3/4 (0.75), F (1.0)
     for k in 0..=4 {
         let f = k as f32 / 4.0;
         let inner = if k == 0 || k == 2 || k == 4 { rad - 5.0 } else { rad - 3.0 };
-        p.line_segment([pt(f, inner), pt(f, rad)], Stroke::new(1.0, a(th.text_dim, 180)));
+        let tcol = if k == 0 { th.redline } else { th.text_dim };
+        p.line_segment([pt(f, inner), pt(f, rad)], Stroke::new(1.0, a(tcol, 190)));
     }
 
     // E and F letters
-    p.text(pt(0.0, rad + 5.5), Align2::RIGHT_BOTTOM, "E", FontId::monospace(8.0), if low_fuel { th.redline } else { th.text_dim });
-    p.text(pt(1.0, rad + 5.5), Align2::LEFT_BOTTOM, "F", FontId::monospace(8.0), th.text_dim);
+    p.text(pt(0.0, rad + 4.5), Align2::RIGHT_BOTTOM, "E", FontId::monospace(8.0), if low_fuel { th.redline } else { th.text_dim });
+    p.text(pt(1.0, rad + 4.5), Align2::LEFT_BOTTOM, "F", FontId::monospace(8.0), th.text_dim);
 
     // Needle + Pivot
     let needle_val = (pct / 100.0).clamp(0.0, 1.0);
-    p.line_segment([pt(needle_val, 2.0), pt(needle_val, rad - 3.0)], Stroke::new(1.8, th.tertiary));
+    p.line_segment([pt(needle_val, 2.0), pt(needle_val, rad - 2.5)], Stroke::new(1.8, th.tertiary));
+    p.line_segment([pt(needle_val, rad - 5.0), pt(needle_val, rad - 1.5)], Stroke::new(1.8, Color32::WHITE));
     p.circle_filled(pos2(cx, cy), 2.5, th.tertiary);
 
-    // Low Fuel Warning Lamp (pulsing LED)
+    // Low Fuel Warning Lamp (pulsing LED ONLY when low)
     if low_fuel {
         let flash = ((t * 4.0) as i32) % 2 == 0;
         let lamp_col = if flash { th.redline } else { th.warning };
-        let lamp_pos = pos2(cx - rad * 0.45, cy - rad * 0.65);
-        p.circle_filled(lamp_pos, 3.5, a(lamp_col, 50));
-        p.circle_filled(lamp_pos, 2.0, lamp_col);
+        let lamp_pos = pos2(cx - rad * 0.42, cy - rad * 0.58);
+        p.circle_filled(lamp_pos, 4.0, a(lamp_col, 60));
+        p.circle_filled(lamp_pos, 2.2, lamp_col);
     }
 
     // Right side: Label, Bold Percentage, Reset countdown
     let text_x = r.right() - 2.0;
-    p.text(pos2(text_x, r.top() + 1.0), Align2::RIGHT_TOP, label, FontId::monospace(9.0), th.text_dim);
+    p.text(pos2(text_x, r.top() + 1.0), Align2::RIGHT_TOP, label, FontId::monospace(8.5), th.text_dim);
 
-    let num_size = (h * 0.40).clamp(13.0, 20.0);
+    let num_size = (h * 0.36).clamp(12.0, 18.0);
     let num_col = if low_fuel { th.redline } else { th.text_bright };
     p.text(
         pos2(text_x, r.center().y - 1.0),
@@ -1081,8 +1127,250 @@ fn draw_ferrari_fuel_dial(
         num_col,
     );
 
-    let timer_txt = format!("⏱ {}", reset_str);
-    p.text(pos2(text_x, r.bottom() - 1.0), Align2::RIGHT_BOTTOM, timer_txt, FontId::monospace(8.5), th.secondary);
+    p.text(pos2(text_x, r.bottom() - 1.0), Align2::RIGHT_BOTTOM, reset_str, FontId::monospace(8.5), th.secondary);
+}
+
+/// Twin Vertical Fuel Cells / Sight Glass: liquid fill chamber with meniscus, graduation ticks, and low-fuel glow
+fn draw_vertical_fuel_cell(
+    p: &Painter,
+    r: Rect,
+    label: &str,
+    pct: f32,
+    reset_str: &str,
+    th: &ThemePalette,
+    t: f32,
+) {
+    let low_fuel = pct < 15.0;
+    let h = r.height();
+
+    // Vertical glass tube on the left side of this tank half
+    let tube_w = (r.width() * 0.24).clamp(16.0, 26.0);
+    let tube = Rect::from_min_max(
+        pos2(r.left() + 12.0, r.top() + 2.0),
+        pos2(r.left() + 12.0 + tube_w, r.bottom() - 2.0),
+    );
+
+    // Glass tube housing
+    p.rect_filled(tube, 3.0, a(th.graph_bg, 220));
+    let border_col = if low_fuel && ((t * 4.0) as i32) % 2 == 0 { th.redline } else { th.border };
+    p.rect_stroke(tube, 3.0, Stroke::new(1.1, border_col), egui::StrokeKind::Inside);
+
+    // Reserve zone tint at bottom 15%
+    let res_h = tube.height() * 0.15;
+    let res_rect = Rect::from_min_max(pos2(tube.left() + 1.0, tube.bottom() - res_h), pos2(tube.right() - 1.0, tube.bottom() - 1.0));
+    p.rect_filled(res_rect, 1.0, a(th.redline, 35));
+
+    // Liquid fill from bottom up
+    let inner_h = (tube.height() - 2.0).max(1.0);
+    let fill_h = inner_h * (pct / 100.0).clamp(0.0, 1.0);
+    if fill_h > 1.0 {
+        let fill_top = tube.bottom() - 1.0 - fill_h;
+        let fill_col = if low_fuel {
+            if ((t * 4.0) as i32) % 2 == 0 { th.redline } else { th.warning }
+        } else if pct < 35.0 {
+            th.warning
+        } else {
+            th.primary
+        };
+        let fill_rect = Rect::from_min_max(pos2(tube.left() + 1.5, fill_top), pos2(tube.right() - 1.5, tube.bottom() - 1.0));
+        p.rect_filled(fill_rect, 2.0, a(fill_col, 210));
+        // Bright liquid meniscus highlight line at top of fill
+        p.line_segment(
+            [pos2(tube.left() + 2.0, fill_top), pos2(tube.right() - 2.0, fill_top)],
+            Stroke::new(1.5, Color32::WHITE),
+        );
+    }
+
+    // Quarter-tank graduation ticks along the glass
+    for k in 1..=3 {
+        let ty = tube.bottom() - tube.height() * (k as f32 / 4.0);
+        let tick_w = if k == 2 { tube_w * 0.45 } else { tube_w * 0.25 };
+        p.line_segment([pos2(tube.right() - tick_w, ty), pos2(tube.right() - 1.0, ty)], Stroke::new(0.8, a(th.text_bright, 120)));
+    }
+
+    // F and E labels beside the tube
+    p.text(pos2(tube.left() - 3.0, tube.top()), Align2::RIGHT_TOP, "F", FontId::monospace(7.5), th.text_dim);
+    p.text(pos2(tube.left() - 3.0, tube.bottom()), Align2::RIGHT_BOTTOM, "E", FontId::monospace(7.5), if low_fuel { th.redline } else { th.text_dim });
+
+    // Right column: Label, Big %, Reset time, Low Fuel badge
+    let tx = tube.right() + 7.0;
+    p.text(pos2(tx, r.top() + 1.0), Align2::LEFT_TOP, label, FontId::monospace(8.5), th.text_dim);
+    let num_size = (h * 0.42).clamp(13.0, 21.0);
+    p.text(
+        pos2(tx, r.center().y),
+        Align2::LEFT_CENTER,
+        format!("{:.0}%", pct),
+        FontId::monospace(num_size),
+        if low_fuel { th.redline } else { th.text_bright },
+    );
+    let sub_txt = if low_fuel {
+        format!("LOW · {}", reset_str)
+    } else {
+        format!("RST {}", reset_str)
+    };
+    p.text(
+        pos2(tx, r.bottom() - 1.0),
+        Align2::LEFT_BOTTOM,
+        sub_txt,
+        FontId::monospace(8.0),
+        if low_fuel { th.warning } else { th.secondary },
+    );
+}
+
+/// Minimalist Ring Gauges: Antigravity-inspired circular progress rings with centered % & reset timer
+fn draw_ring_fuel_gauge(
+    p: &Painter,
+    r: Rect,
+    label: &str,
+    pct: f32,
+    reset_str: &str,
+    th: &ThemePalette,
+    t: f32,
+) {
+    let low_fuel = pct < 15.0;
+    let h = r.height();
+    let rad = ((h - 6.0) * 0.5).min(r.width() * 0.24).clamp(10.0, 24.0);
+    let cx = r.left() + rad + 6.0;
+    let cy = r.center().y;
+
+    let ring_pt = |frac: f32, rr: f32| {
+        // Start at 12 o'clock (-PI/2) and sweep clockwise
+        let angle = -std::f32::consts::FRAC_PI_2 + frac.clamp(0.0, 1.0) * std::f32::consts::TAU;
+        pos2(cx + rr * angle.cos(), cy + rr * angle.sin())
+    };
+
+    // Background ring track
+    p.circle_stroke(pos2(cx, cy), rad, Stroke::new(3.0, a(th.border, 120)));
+
+    // Active progress arc
+    let sweep = (pct / 100.0).clamp(0.0, 1.0);
+    let ring_col = if low_fuel {
+        if ((t * 4.0) as i32) % 2 == 0 { th.redline } else { th.warning }
+    } else if pct < 35.0 {
+        th.warning
+    } else {
+        th.primary
+    };
+    if sweep > 0.01 {
+        let steps = ((sweep * 36.0) as usize).max(4);
+        let pts: Vec<Pos2> = (0..=steps).map(|k| ring_pt(sweep * (k as f32 / steps as f32), rad)).collect();
+        p.add(PathShape::line(pts, Stroke::new(3.2, ring_col)));
+    }
+
+    // Center % inside ring
+    let inner_font = (rad * 0.62).clamp(8.0, 13.0);
+    p.text(
+        pos2(cx, cy),
+        Align2::CENTER_CENTER,
+        format!("{:.0}", pct),
+        FontId::monospace(inner_font),
+        if low_fuel { th.redline } else { th.text_bright },
+    );
+
+    // Red alert dot at top of ring when low (matching Antigravity UI)
+    if low_fuel {
+        let dot_pos = ring_pt(0.0, rad);
+        p.circle_filled(dot_pos, 3.0, a(th.redline, 70));
+        p.circle_filled(dot_pos, 1.8, th.redline);
+    }
+
+    // Right side text block
+    let tx = cx + rad + 8.0;
+    p.text(pos2(tx, r.top() + 2.0), Align2::LEFT_TOP, label, FontId::monospace(8.5), th.text_dim);
+    p.text(
+        pos2(tx, r.center().y),
+        Align2::LEFT_CENTER,
+        format!("{:.0}% left", pct),
+        FontId::monospace(10.5),
+        if low_fuel { th.redline } else { th.text_bright },
+    );
+    p.text(
+        pos2(tx, r.bottom() - 2.0),
+        Align2::LEFT_BOTTOM,
+        format!("Resets {}", reset_str),
+        FontId::monospace(8.0),
+        th.secondary,
+    );
+}
+
+/// Cockpit HUD Fuel Telemetry: fighter-jet / avionics split-bar HUD with reserve zone hatching & caret
+fn draw_hud_fuel_gauge(
+    p: &Painter,
+    r: Rect,
+    label: &str,
+    pct: f32,
+    reset_str: &str,
+    th: &ThemePalette,
+    t: f32,
+) {
+    let low_fuel = pct < 15.0;
+
+    // Frame with subtle corner brackets
+    let bracket = 5.0;
+    let br_col = a(if low_fuel { th.redline } else { th.primary }, 160);
+    let st = Stroke::new(1.0, br_col);
+    p.line_segment([r.left_top(), pos2(r.left() + bracket, r.top())], st);
+    p.line_segment([r.left_top(), pos2(r.left(), r.top() + bracket)], st);
+    p.line_segment([r.right_top(), pos2(r.right() - bracket, r.top())], st);
+    p.line_segment([r.right_top(), pos2(r.right(), r.top() + bracket)], st);
+    p.line_segment([r.left_bottom(), pos2(r.left() + bracket, r.bottom())], st);
+    p.line_segment([r.left_bottom(), pos2(r.left(), r.bottom() - bracket)], st);
+    p.line_segment([r.right_bottom(), pos2(r.right() - bracket, r.bottom())], st);
+    p.line_segment([r.right_bottom(), pos2(r.right(), r.bottom() - bracket)], st);
+
+    // Top row: label + numeric %
+    p.text(pos2(r.left() + 5.0, r.top() + 2.0), Align2::LEFT_TOP, label, FontId::monospace(8.0), th.text_dim);
+    let pct_col = if low_fuel {
+        if ((t * 4.0) as i32) % 2 == 0 { th.redline } else { Color32::WHITE }
+    } else {
+        th.text_bright
+    };
+    p.text(pos2(r.right() - 5.0, r.top() + 1.0), Align2::RIGHT_TOP, format!("{:.0}%", pct), FontId::monospace(10.5), pct_col);
+
+    // Horizontal HUD bar
+    let bar_l = r.left() + 6.0;
+    let bar_r = r.right() - 6.0;
+    let bar_w = (bar_r - bar_l).max(16.0);
+    let bar_cy = r.center().y + 1.0;
+    let bar_h = 7.0;
+    let bar_rect = Rect::from_min_max(pos2(bar_l, bar_cy - bar_h * 0.5), pos2(bar_r, bar_cy + bar_h * 0.5));
+
+    p.rect_filled(bar_rect, 1.0, a(th.graph_bg, 220));
+    p.rect_stroke(bar_rect, 1.0, Stroke::new(0.8, a(th.border, 140)), egui::StrokeKind::Inside);
+
+    // Hatched reserve zone (left 15%)
+    let res_x = bar_l + bar_w * 0.15;
+    p.rect_filled(
+        Rect::from_min_max(pos2(bar_l + 1.0, bar_rect.top() + 1.0), pos2(res_x, bar_rect.bottom() - 1.0)),
+        0.0,
+        a(th.redline, 55),
+    );
+    p.line_segment([pos2(res_x, bar_rect.top() - 2.0), pos2(res_x, bar_rect.bottom() + 2.0)], Stroke::new(1.0, a(th.redline, 180)));
+
+    // Active fuel fill
+    let cur_x = bar_l + bar_w * (pct / 100.0).clamp(0.0, 1.0);
+    if cur_x > bar_l + 1.5 {
+        let fcol = if low_fuel { th.redline } else if pct < 35.0 { th.warning } else { th.primary };
+        p.rect_filled(
+            Rect::from_min_max(pos2(bar_l + 1.0, bar_rect.top() + 1.5), pos2(cur_x, bar_rect.bottom() - 1.5)),
+            0.5,
+            a(fcol, 220),
+        );
+    }
+
+    // Crisp HUD caret pointer at current level
+    p.line_segment([pos2(cur_x, bar_rect.top() - 3.0), pos2(cur_x, bar_rect.bottom() + 3.0)], Stroke::new(1.5, Color32::WHITE));
+
+    // Bottom row: E / LOW FUEL / reset countdown
+    let bot_left = if low_fuel { "LOW FUEL" } else { "E       1/2" };
+    p.text(
+        pos2(r.left() + 5.0, r.bottom() - 2.0),
+        Align2::LEFT_BOTTOM,
+        bot_left,
+        FontId::monospace(7.5),
+        if low_fuel { th.redline } else { th.text_dim },
+    );
+    p.text(pos2(r.right() - 5.0, r.bottom() - 2.0), Align2::RIGHT_BOTTOM, reset_str, FontId::monospace(8.0), th.secondary);
 }
 
 /// Corvette C4: Segmented LCD digital wedge with 7-segment readout and LOW FUEL alert
